@@ -1183,38 +1183,7 @@ export default function App() {
         <OpenModal target={openModal} capital={capital} onConfirm={handleConfirm} onClose={() => setOpenModal(null)} />
       )}
 
-      {
-/* SMALL CAPS */
-.sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
-.sc-card{background:${C.card};border:1px solid ${C.border};border-radius:12px;padding:16px;transition:border-color .2s;animation:fade-up .25s ease}
-.sc-card:hover{border-color:${C.b2}}
-.sc-card.tier-hot{border-color:#10b98133;background:linear-gradient(135deg,${C.card},#0a1f1800)}
-.sc-card.tier-good{border-color:#06b6d433}
-.sc-card.tier-mid{border-color:#eab30833}
-.sc-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-.sc-sym{font-family:'Outfit',sans-serif;font-size:18px;font-weight:800;color:${C.white}}
-.sc-exch{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;margin-left:6px}
-.sc-apr{font-family:'Outfit',sans-serif;font-size:22px;font-weight:800}
-.sc-apr.hot{color:#10b981} .sc-apr.good{color:#06b6d4} .sc-apr.mid{color:#eab308}
-.sc-profit-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:10px 0}
-.sc-profit-cell{background:${C.surface};border-radius:6px;padding:8px;text-align:center}
-.sc-profit-label{font-size:9px;color:${C.muted};text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
-.sc-profit-val{font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;color:#10b981}
-.sc-profit-fee{font-size:9px;color:${C.muted};margin-top:1px}
-.sc-dur{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid ${C.border}22}
-.sc-dur-label{font-size:11px;font-weight:600}
-.sc-days{font-size:10px;color:${C.muted}}
-.sc-open-btn{padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s;background:#10b98118;border:1px solid #10b98144;color:#10b981}
-.sc-open-btn:hover{background:#10b98128}
-.sc-open-btn.active{background:#eab30818;border-color:#eab30844;color:#eab308;cursor:default}
-.sc-empty{text-align:center;padding:48px 24px;color:${C.muted};font-size:12px;line-height:1.8}
-.sc-filters{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.sc-filter-btn{padding:5px 12px;border-radius:20px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
-.sc-filter-btn:hover{border-color:${C.b2};color:${C.text}}
-.sc-filter-btn.active{background:#10b98118;border-color:#10b98144;color:#10b981}
-.sc-info{background:${C.surface};border:1px solid ${C.border};border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:11px;color:${C.text};line-height:1.7}
 
-/* MOBILE BOTTOM NAV */}
       <nav className="mob-nav">
         <div className="mob-nav-inner">
           {[["rates","📊","Rates"],["arb","⚡","Arb"],["smallcaps","🔥","S.Caps"],["positions","🏦","Pos"]].map(([id,icon,label])=>(
