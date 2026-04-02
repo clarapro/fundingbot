@@ -423,7 +423,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [capital, setCapital] = useState(500);
-  const [enabledExchanges, setEnabledExchanges] = useState(["Hyperliquid","Binance","Bybit"]);
+  const [enabledExchanges, setEnabledExchanges] = useState(["Hyperliquid","Binance","Bybit","MEXC"]);
   const [sortBy, setSortBy] = useState("apr");
   const [filterPositive, setFilterPositive] = useState(true);
   const [openModal, setOpenModal] = useState(null);
@@ -437,10 +437,17 @@ export default function App() {
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
-    await new Promise(r => setTimeout(r, 300 + Math.random() * 300));
-    setRows(buildRows());
-    setLastUpdate(new Date());
-    setLoading(false);
+    try {
+      const res = await fetch("/api/rates");
+      const data = await res.json();
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      setRows(rows);
+      setLastUpdate(new Date());
+    } catch (e) {
+      console.error("fetchAll error:", e);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { fetchAll(); }, []);
@@ -479,8 +486,9 @@ export default function App() {
     }]);
   }, [capital]);
 
-  // Filtered + sorted rows
-  const filtered = rows
+  // Filtered + sorted rows — guard against non-array
+  const safeRows = Array.isArray(rows) ? rows : [];
+  const filtered = safeRows
     .filter(r => enabledExchanges.includes(r.exchange))
     .filter(r => filterPositive ? r.apr > 0 : true)
     .sort((a, b) => {
@@ -491,7 +499,7 @@ export default function App() {
     })
     .slice(0, 80);
 
-  const arbs = findCrossArb(rows.filter(r => enabledExchanges.includes(r.exchange)));
+  const arbs = findCrossArb(safeRows.filter(r => enabledExchanges.includes(r.exchange)));
   const bestAPR = filtered[0]?.apr || 0;
   const posCount = positions.length;
   const totalPnL = positions.reduce((s, p) => s + p.pnl, 0);
