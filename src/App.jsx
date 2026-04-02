@@ -68,6 +68,75 @@ function anomalyLabel(score) {
 }
 
 
+
+// ─── SMALL CAPS ENGINE ───────────────────────────────────────────────────────
+// Cibles : APR > 30%, exchange MEXC ou Hyperliquid, paire non-majeure
+const MAJORS = new Set(["BTC","ETH","BNB","SOL","XRP","ADA","DOGE","LTC","DOT","AVAX","LINK","ATOM"]);
+
+function isSmallCap(row) {
+  return (row.exchange === "MEXC" || row.exchange === "Hyperliquid") && !MAJORS.has(row.symbol);
+}
+
+// Score de durabilité 1-4 jours (0-100)
+// Basé sur : stabilité historique + niveau APR + exchange
+function getDurabilityScore(row) {
+  const key = `${row.exchange}-${row.symbol}`;
+  const hist = rateHistory[key] || [];
+  const apr = row.apr;
+
+  if (apr < 20) return 0;
+
+  // Base score selon APR
+  let score = Math.min(40, apr * 0.4);
+
+  if (hist.length >= 3) {
+    const aprs = hist.map(h => h.apr);
+    const avg = aprs.reduce((a, b) => a + b, 0) / aprs.length;
+    const variance = aprs.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / aprs.length;
+    const stdDev = Math.sqrt(variance);
+    const cv = avg > 0 ? stdDev / avg : 1; // coefficient of variation
+
+    // Stabilité : CV faible = rate stable = bonus
+    const stabilityBonus = Math.max(0, 40 * (1 - cv * 2));
+    score += stabilityBonus;
+
+    // Tendance : rate qui monte = +bonus, qui baisse = malus
+    const recent = aprs.slice(-3);
+    const trend = recent[recent.length - 1] - recent[0];
+    if (trend > 0) score += 10;
+    else if (trend < -avg * 0.2) score -= 15;
+
+    // Persistance : si tous les snapshots > 20% APR = très bon signe
+    const allHigh = aprs.every(a => a > 20);
+    if (allHigh && hist.length >= 5) score += 10;
+  } else {
+    // Pas d'historique — score conservateur
+    score = Math.min(score, 35);
+  }
+
+  // MEXC bonus (rates structurellement plus élevés sur meme coins)
+  if (row.exchange === "MEXC" && apr > 50) score += 8;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function durabilityLabel(score) {
+  if (score >= 70) return { text: "★★★ Excellent", color: "#10b981", days: "3-4j" };
+  if (score >= 50) return { text: "★★☆ Bon",       color: "#06b6d4", days: "2-3j" };
+  if (score >= 30) return { text: "★☆☆ Moyen",     color: "#eab308", days: "1-2j" };
+  return             { text: "☆☆☆ Faible",          color: "#6b7280", days: "<1j" };
+}
+
+// Calcul profit net sur N jours
+function calcProfit(row, capitalEUR, days) {
+  const capUSD = capitalEUR * 1.08;
+  const dailyAPR = row.apr / 100 / 365;
+  const grossProfit = capUSD * dailyAPR * days;
+  // Fees : 0.04% taker × 2 legs (entrée) + 0.04% × 2 (sortie)
+  const fees = capUSD * 0.0004 * 4;
+  return { gross: grossProfit, fees, net: grossProfit - fees, roi: (grossProfit - fees) / capUSD * 100 };
+}
+
 // Find cross-exchange arb: same symbol, long on low rate, short on high rate
 function findCrossArb(rows) {
   const bySymbol = {};
@@ -324,6 +393,37 @@ td{padding:10px 14px;font-size:12px;white-space:nowrap}
 .pill.teal{background:${C.teal}18;border:1px solid ${C.teal}33;color:${C.teal}}
 .pill.gold{background:${C.gold}18;border:1px solid ${C.gold}33;color:${C.gold}}
 .pill.red{background:${C.red}18;border:1px solid ${C.red}33;color:${C.red}}
+
+
+/* SMALL CAPS */
+.sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.sc-card{background:${C.card};border:1px solid ${C.border};border-radius:12px;padding:16px;transition:border-color .2s;animation:fade-up .25s ease}
+.sc-card:hover{border-color:${C.b2}}
+.sc-card.tier-hot{border-color:#10b98133;background:linear-gradient(135deg,${C.card},#0a1f1800)}
+.sc-card.tier-good{border-color:#06b6d433}
+.sc-card.tier-mid{border-color:#eab30833}
+.sc-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sc-sym{font-family:'Outfit',sans-serif;font-size:18px;font-weight:800;color:${C.white}}
+.sc-exch{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;margin-left:6px}
+.sc-apr{font-family:'Outfit',sans-serif;font-size:22px;font-weight:800}
+.sc-apr.hot{color:#10b981} .sc-apr.good{color:#06b6d4} .sc-apr.mid{color:#eab308}
+.sc-profit-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:10px 0}
+.sc-profit-cell{background:${C.surface};border-radius:6px;padding:8px;text-align:center}
+.sc-profit-label{font-size:9px;color:${C.muted};text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
+.sc-profit-val{font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;color:#10b981}
+.sc-profit-fee{font-size:9px;color:${C.muted};margin-top:1px}
+.sc-dur{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid ${C.border}22}
+.sc-dur-label{font-size:11px;font-weight:600}
+.sc-days{font-size:10px;color:${C.muted}}
+.sc-open-btn{padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s;background:#10b98118;border:1px solid #10b98144;color:#10b981}
+.sc-open-btn:hover{background:#10b98128}
+.sc-open-btn.active{background:#eab30818;border-color:#eab30844;color:#eab308;cursor:default}
+.sc-empty{text-align:center;padding:48px 24px;color:${C.muted};font-size:12px;line-height:1.8}
+.sc-filters{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.sc-filter-btn{padding:5px 12px;border-radius:20px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
+.sc-filter-btn:hover{border-color:${C.b2};color:${C.text}}
+.sc-filter-btn.active{background:#10b98118;border-color:#10b98144;color:#10b981}
+.sc-info{background:${C.surface};border:1px solid ${C.border};border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:11px;color:${C.text};line-height:1.7}
 
 /* MOBILE BOTTOM NAV */
 .mob-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:${C.surface};border-top:1px solid ${C.border};z-index:200;padding:0 8px env(safe-area-inset-bottom,0)}
@@ -599,12 +699,120 @@ function Sidebar({ capital, setCapital, enabledExchanges, toggleExchange, rows }
   );
 }
 
+// ─── SMALL CAPS COMPONENT ───────────────────────────────────────────────────
+function SmallCapsTab({ rows, capital, positions, onOpen }) {
+  const [minAPR, setMinAPR] = useState(30);
+  const [exchFilter, setExchFilter] = useState("all"); // all | mexc | hl
+
+  const candidates = rows
+    .filter(r => isSmallCap(r))
+    .filter(r => r.apr >= minAPR)
+    .filter(r => exchFilter === "all" || r.exchange.toLowerCase().includes(exchFilter))
+    .map(r => ({
+      ...r,
+      durability: getDurabilityScore(r),
+      durLabel: durabilityLabel(getDurabilityScore(r)),
+      anomaly: getAnomalyScore(r),
+      p1: calcProfit(r, capital, 1),
+      p2: calcProfit(r, capital, 2),
+      p4: calcProfit(r, capital, 4),
+    }))
+    .filter(c => c.anomaly.score < 2) // exclure les DANGER
+    .sort((a, b) => b.durability - a.durability);
+
+  const tierClass = (score) => score >= 70 ? "tier-hot" : score >= 50 ? "tier-good" : "tier-mid";
+  const aprClass  = (apr)   => apr >= 100 ? "hot" : apr >= 50 ? "good" : "mid";
+  const capUSD = capital * 1.08;
+
+  return (
+    <div>
+      <div className="sc-info">
+        <b style={{color:"#e8eeff"}}>🔥 Small Caps Structurellement Rentables</b> — Paires MEXC &amp; Hyperliquid hors top-12. 
+        Les traders retail longuent massivement ces tokens, créant un rate positif persistant de plusieurs jours.
+        Stratégie : <b style={{color:"#10b981"}}>achat spot + short perp ×1</b> → tu encaisses le funding sans exposition au prix.
+        Les rates DANGER (spikes) sont exclus automatiquement.
+      </div>
+
+      <div className="sc-filters">
+        <span style={{fontSize:11,color:"#334466",marginRight:4}}>Exchange :</span>
+        {[["all","Tous"],["mexc","MEXC"],["hl","Hyperliquid"]].map(([v,l]) => (
+          <button key={v} className={`sc-filter-btn ${exchFilter===v?"active":""}`} onClick={() => setExchFilter(v)}>{l}</button>
+        ))}
+        <span style={{fontSize:11,color:"#334466",marginLeft:12,marginRight:4}}>Min APR :</span>
+        {[30,50,80,120].map(v => (
+          <button key={v} className={`sc-filter-btn ${minAPR===v?"active":""}`} onClick={() => setMinAPR(v)}>{v}%+</button>
+        ))}
+        <span style={{fontSize:11,color:"#7a90b4",marginLeft:"auto"}}>{candidates.length} paires · capital {capital}€</span>
+      </div>
+
+      {candidates.length === 0 ? (
+        <div className="sc-empty">
+          Aucune small cap avec APR ≥ {minAPR}% et score NORMAL.<br/>
+          Baisse le filtre Min APR ou attends le prochain refresh (60s).
+        </div>
+      ) : (
+        <div className="sc-grid">
+          {candidates.map((c, i) => {
+            const isOpen = positions.some(p => p.symbol === c.symbol && p.exchange === c.exchange);
+            const exStyle = c.exchange === "MEXC"
+              ? { bg:"#001a10", border:"#00c97444", color:"#00c974" }
+              : { bg:"#051520", border:"#0ea5e944", color:"#38bdf8" };
+            return (
+              <div key={`${c.exchange}-${c.symbol}-${i}`} className={`sc-card ${tierClass(c.durability)}`}>
+                <div className="sc-card-top">
+                  <div style={{display:"flex",alignItems:"center"}}>
+                    <span className="sc-sym">{c.symbol}</span>
+                    <span className="sc-exch" style={{background:exStyle.bg,border:`1px solid ${exStyle.border}`,color:exStyle.color}}>
+                      {c.exchange === "MEXC" ? "MX" : "HL"}
+                    </span>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div className={`sc-apr ${aprClass(c.apr)}`}>{fmtAPR(c.apr)}</div>
+                    <div style={{fontSize:10,color:"#334466"}}>APR · {c.intervalHours}h interval</div>
+                  </div>
+                </div>
+
+                {/* Profit estimé sur 1j / 2j / 4j */}
+                <div className="sc-profit-grid">
+                  {[["1 jour", c.p1], ["2 jours", c.p2], ["4 jours", c.p4]].map(([label, p]) => (
+                    <div key={label} className="sc-profit-cell">
+                      <div className="sc-profit-label">{label}</div>
+                      <div className="sc-profit-val">+{fmtUSD(p.net)}</div>
+                      <div className="sc-profit-fee">fees {fmtUSD(p.fees)}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="sc-dur">
+                  <div>
+                    <div className="sc-dur-label" style={{color:c.durLabel.color}}>{c.durLabel.text}</div>
+                    <div className="sc-days">Durée estimée : {c.durLabel.days} · Score {c.durability}/100</div>
+                    {c.anomaly.score === 1 && (
+                      <div style={{fontSize:10,color:"#eab308",marginTop:3}}>⚡ {c.anomaly.reason}</div>
+                    )}
+                  </div>
+                  <button
+                    className={`sc-open-btn ${isOpen?"active":""}`}
+                    onClick={() => !isOpen && onOpen(c)}
+                    disabled={isOpen}>
+                    {isOpen ? "✓ Ouverte" : "▶ Entrer"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [authed, setAuthed] = useState(false);
   const [pwd, setPwd] = useState("");
   const [pwdErr, setPwdErr] = useState("");
-  const [tab, setTab] = useState("rates");         // rates | arb | positions
+  const [tab, setTab] = useState("rates");         // rates | arb | positions | smallcaps
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -744,7 +952,7 @@ export default function App() {
             </div>
           </div>
           <div className="nav-tabs">
-            {[["rates","📊 Rates"],["arb","⚡ Cross-Arb"],["positions","🏦 Positions"]].map(([id,label])=>(
+            {[["rates","📊 Rates"],["arb","⚡ Cross-Arb"],["smallcaps","🔥 Small Caps"],["positions","🏦 Positions"]].map(([id,label])=>(
               <button key={id} className={`nav-tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
             ))}
           </div>
@@ -907,6 +1115,12 @@ export default function App() {
             </div>
           )}
 
+
+          {/* ── TAB : SMALL CAPS ── */}
+          {tab === "smallcaps" && (
+            <SmallCapsTab rows={safeRows} capital={capital} positions={positions} onOpen={setOpenModal} />
+          )}
+
           {/* ── TAB : POSITIONS ── */}
           {tab === "positions" && (
             <div>
@@ -969,10 +1183,41 @@ export default function App() {
         <OpenModal target={openModal} capital={capital} onConfirm={handleConfirm} onClose={() => setOpenModal(null)} />
       )}
 
-      {/* MOBILE BOTTOM NAV */}
+      {
+/* SMALL CAPS */
+.sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.sc-card{background:${C.card};border:1px solid ${C.border};border-radius:12px;padding:16px;transition:border-color .2s;animation:fade-up .25s ease}
+.sc-card:hover{border-color:${C.b2}}
+.sc-card.tier-hot{border-color:#10b98133;background:linear-gradient(135deg,${C.card},#0a1f1800)}
+.sc-card.tier-good{border-color:#06b6d433}
+.sc-card.tier-mid{border-color:#eab30833}
+.sc-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sc-sym{font-family:'Outfit',sans-serif;font-size:18px;font-weight:800;color:${C.white}}
+.sc-exch{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:700;margin-left:6px}
+.sc-apr{font-family:'Outfit',sans-serif;font-size:22px;font-weight:800}
+.sc-apr.hot{color:#10b981} .sc-apr.good{color:#06b6d4} .sc-apr.mid{color:#eab308}
+.sc-profit-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:10px 0}
+.sc-profit-cell{background:${C.surface};border-radius:6px;padding:8px;text-align:center}
+.sc-profit-label{font-size:9px;color:${C.muted};text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
+.sc-profit-val{font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;color:#10b981}
+.sc-profit-fee{font-size:9px;color:${C.muted};margin-top:1px}
+.sc-dur{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid ${C.border}22}
+.sc-dur-label{font-size:11px;font-weight:600}
+.sc-days{font-size:10px;color:${C.muted}}
+.sc-open-btn{padding:6px 14px;border-radius:7px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s;background:#10b98118;border:1px solid #10b98144;color:#10b981}
+.sc-open-btn:hover{background:#10b98128}
+.sc-open-btn.active{background:#eab30818;border-color:#eab30844;color:#eab308;cursor:default}
+.sc-empty{text-align:center;padding:48px 24px;color:${C.muted};font-size:12px;line-height:1.8}
+.sc-filters{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.sc-filter-btn{padding:5px 12px;border-radius:20px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
+.sc-filter-btn:hover{border-color:${C.b2};color:${C.text}}
+.sc-filter-btn.active{background:#10b98118;border-color:#10b98144;color:#10b981}
+.sc-info{background:${C.surface};border:1px solid ${C.border};border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:11px;color:${C.text};line-height:1.7}
+
+/* MOBILE BOTTOM NAV */}
       <nav className="mob-nav">
         <div className="mob-nav-inner">
-          {[["rates","📊","Rates"],["arb","⚡","Arb"],["positions","🏦","Positions"]].map(([id,icon,label])=>(
+          {[["rates","📊","Rates"],["arb","⚡","Arb"],["smallcaps","🔥","S.Caps"],["positions","🏦","Pos"]].map(([id,icon,label])=>(
             <button key={id} className={`mob-tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>
               <span className="mob-tab-icon">{icon}</span>
               {label}
