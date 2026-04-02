@@ -11,6 +11,63 @@ async function buildRows() {
 
 function mergeAll(rows) { return rows; }
 
+// ─── ANOMALY DETECTION ENGINE ────────────────────────────────────────────────
+// Historique des rates pour détecter les spikes (garde 20 snapshots par paire)
+const rateHistory = {};
+
+function recordRates(rows) {
+  const now = Date.now();
+  rows.forEach(r => {
+    const key = `${r.exchange}-${r.symbol}`;
+    if (!rateHistory[key]) rateHistory[key] = [];
+    rateHistory[key].push({ apr: r.apr, ts: now });
+    if (rateHistory[key].length > 20) rateHistory[key].shift();
+  });
+}
+
+// Score d'anomalie : 0=normal, 1=suspect, 2=danger
+function getAnomalyScore(row) {
+  const key = `${row.exchange}-${row.symbol}`;
+  const hist = rateHistory[key] || [];
+  if (hist.length < 3) return { score: 0, reason: null };
+
+  const aprs = hist.map(h => h.apr);
+  const avg = aprs.reduce((a, b) => a + b, 0) / aprs.length;
+  const current = row.apr;
+
+  // Pattern 1 : spike soudain (rate > 3x la moyenne historique)
+  if (current > avg * 3 && current > 50) {
+    return { score: 2, reason: `Spike ×${(current/avg).toFixed(1)} vs moyenne (${avg.toFixed(0)}% APR)` };
+  }
+
+  // Pattern 2 : rate anormalement élevé (>200% APR) sans historique stable
+  if (current > 200) {
+    const stable = aprs.filter(a => a > 100).length;
+    if (stable < 3) return { score: 2, reason: `Rate >200% APR sans historique stable` };
+  }
+
+  // Pattern 3 : spike modéré (2x la moyenne)
+  if (current > avg * 2 && current > 30) {
+    return { score: 1, reason: `Rate ×${(current/avg).toFixed(1)} vs moyenne — surveiller` };
+  }
+
+  // Pattern 4 : rate très instable (variance élevée)
+  const variance = aprs.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / aprs.length;
+  const stdDev = Math.sqrt(variance);
+  if (stdDev > avg * 0.5 && avg > 20) {
+    return { score: 1, reason: `Rate instable (σ=${stdDev.toFixed(0)}%) — risque d'inversion` };
+  }
+
+  return { score: 0, reason: null };
+}
+
+function anomalyLabel(score) {
+  if (score === 2) return { text: "⚠ DANGER", color: "#f43f5e" };
+  if (score === 1) return { text: "⚡ SUSPECT", color: "#f59e0b" };
+  return { text: "✓ NORMAL", color: "#22c55e" };
+}
+
+
 // Find cross-exchange arb: same symbol, long on low rate, short on high rate
 function findCrossArb(rows) {
   const bySymbol = {};
@@ -57,19 +114,27 @@ const EX_STYLE = {
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 const C = {
-  bg: "#060912", surface: "#0a0f1e", card: "#0e1428",
-  border: "#182040", b2: "#1e2d55",
-  gold: "#f0b429", teal: "#00d4aa", blue: "#3b82f6",
-  red: "#f43f5e", green: "#22c55e", purple: "#a855f7",
-  muted: "#3d4f70", text: "#8899bb", white: "#e8eeff",
+  bg:      "#04060f",   // near-black, slightly warmer
+  surface: "#080c18",   // nav/sidebar
+  card:    "#0c1120",   // cards
+  border:  "#141e35",   // subtle borders
+  b2:      "#1c2a48",   // stronger borders
+  accent:  "#2563eb",   // primary blue
+  teal:    "#06b6d4",   // cyan — main highlight
+  gold:    "#eab308",   // amber — high rates
+  red:     "#e11d48",   // danger
+  green:   "#10b981",   // success
+  purple:  "#7c3aed",   // arb
+  muted:   "#334466",   // muted text
+  text:    "#7a90b4",   // body text
+  white:   "#dde6f5",   // headings
 };
 
 const css = `
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Clash+Display:wght@600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Outfit:wght@500;600;700;800&display=swap');
 
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{background:${C.bg};color:${C.text};font-family:'DM Mono',monospace;overflow-x:hidden}
+body{background:${C.bg};color:${C.text};font-family:'JetBrains Mono',monospace;overflow-x:hidden}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:${C.b2};border-radius:2px}
 
 @keyframes fade-up{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
@@ -81,21 +146,25 @@ body{background:${C.bg};color:${C.text};font-family:'DM Mono',monospace;overflow
 
 /* LAYOUT */
 .root{display:grid;grid-template-columns:280px 1fr;grid-template-rows:58px 1fr;min-height:100vh}
-.nav{grid-column:1/-1;background:${C.surface};border-bottom:1px solid ${C.border};display:flex;align-items:center;padding:0 24px;gap:16px;position:sticky;top:0;z-index:100}
-.sidebar{background:${C.surface};border-right:1px solid ${C.border};padding:20px 16px;overflow-y:auto;height:calc(100vh - 58px);position:sticky;top:58px}
+.nav{grid-column:1/-1;background:${C.surface};border-bottom:1px solid ${C.border};display:flex;align-items:center;padding:0 24px;gap:16px;position:sticky;top:0;z-index:100;box-shadow:0 1px 0 ${C.b2}}
+.sidebar{background:${C.bg};border-right:1px solid ${C.border};padding:20px 16px;overflow-y:auto;height:calc(100vh - 58px);position:sticky;top:58px}
 .main{padding:22px;overflow-y:auto;height:calc(100vh - 58px)}
 
 /* NAV */
-.logo{font-family:'Outfit',sans-serif;font-weight:700;font-size:17px;color:${C.white};display:flex;align-items:center;gap:8px}
-.logo-mark{background:linear-gradient(135deg,${C.teal},${C.blue});width:26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:13px}
+.logo{font-family:'Outfit',sans-serif;font-weight:800;font-size:16px;color:${C.white};display:flex;align-items:center;gap:10px;letter-spacing:-0.3px}
+.logo-mark{background:linear-gradient(135deg,${C.teal},${C.accent});width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px ${C.teal}44}
+.logo-name{display:flex;flex-direction:column;gap:0px}
+.logo-title{font-family:'Outfit',sans-serif;font-weight:800;font-size:15px;color:${C.white};letter-spacing:-0.3px;line-height:1.1}
+.logo-by{font-size:10px;color:${C.muted};font-weight:400;letter-spacing:0;display:flex;align-items:center;gap:3px;line-height:1}
+.tg-icon{color:#26a8ea;font-size:11px}
 .nav-tabs{display:flex;gap:2px;margin-left:16px}
-.nav-tab{padding:6px 14px;border-radius:7px;border:none;background:transparent;color:${C.muted};font-family:'DM Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s}
+.nav-tab{padding:6px 14px;border-radius:7px;border:none;background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s}
 .nav-tab:hover{color:${C.text}}
-.nav-tab.active{background:${C.card};color:${C.white};border:1px solid ${C.border}}
+.nav-tab.active{background:${C.teal}15;color:${C.teal};border:1px solid ${C.teal}33}
 .nav-right{margin-left:auto;display:flex;align-items:center;gap:14px}
 .live-badge{display:flex;align-items:center;gap:6px;background:${C.card};border:1px solid ${C.border};border-radius:20px;padding:4px 12px;font-size:11px;color:${C.muted}}
 .live-dot{width:6px;height:6px;border-radius:50%;background:${C.teal};animation:pulse 1.3s infinite}
-.refresh-btn{padding:5px 12px;border-radius:8px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'DM Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
+.refresh-btn{padding:5px 12px;border-radius:8px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s}
 .refresh-btn:hover{border-color:${C.b2};color:${C.text}}
 
 /* SIDEBAR */
@@ -131,7 +200,8 @@ body{background:${C.bg};color:${C.text};font-family:'DM Mono',monospace;overflow
 
 /* MAIN KPI */
 .kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
-.kpi{background:${C.card};border:1px solid ${C.border};border-radius:11px;padding:15px;animation:fade-up .35s ease both}
+.kpi{background:${C.card};border:1px solid ${C.border};border-radius:12px;padding:16px;animation:fade-up .35s ease both;transition:border-color .2s}
+.kpi:hover{border-color:${C.b2}}
 .kpi::before{content:'';display:block;height:2px;border-radius:2px;margin-bottom:12px}
 .kpi.k1::before{background:linear-gradient(90deg,${C.teal},transparent)}
 .kpi.k2::before{background:linear-gradient(90deg,${C.gold},transparent)}
@@ -147,14 +217,14 @@ body{background:${C.bg};color:${C.text};font-family:'DM Mono',monospace;overflow
 
 /* TABS */
 .view-tabs{display:flex;gap:6px;margin-bottom:16px}
-.view-tab{padding:7px 16px;border-radius:8px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'DM Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s}
+.view-tab{padding:7px 16px;border-radius:8px;border:1px solid ${C.border};background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s}
 .view-tab:hover{color:${C.text};border-color:${C.b2}}
 .view-tab.active{background:${C.teal}18;border-color:${C.teal}55;color:${C.teal}}
 
 /* MAIN TABLE */
 .tbl-wrap{background:${C.card};border:1px solid ${C.border};border-radius:11px;overflow:hidden}
 table{width:100%;border-collapse:collapse}
-thead tr{border-bottom:1px solid ${C.border};background:${C.surface}}
+thead tr{border-bottom:1px solid ${C.border};background:${C.bg}}
 th{padding:10px 14px;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:${C.muted};font-weight:500;text-align:left;cursor:pointer;user-select:none;white-space:nowrap}
 th:hover{color:${C.text}}
 th.sorted{color:${C.teal}}
@@ -189,7 +259,7 @@ td{padding:10px 14px;font-size:12px;white-space:nowrap}
 .earn-est{font-size:11px;color:${C.teal};font-weight:500}
 .earn-est.neg{color:${C.red}55}
 
-.action-btn{padding:5px 14px;border-radius:6px;font-family:'DM Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s;border:1px solid}
+.action-btn{padding:5px 14px;border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:11px;cursor:pointer;transition:all .15s;border:1px solid}
 .action-btn.open{background:${C.teal}18;border-color:${C.teal}44;color:${C.teal}}
 .action-btn.open:hover{background:${C.teal}28;border-color:${C.teal}88}
 .action-btn.neg{background:${C.red}11;border-color:${C.red}33;color:${C.red}55;cursor:not-allowed}
@@ -206,7 +276,7 @@ td{padding:10px 14px;font-size:12px;white-space:nowrap}
 .spread-arrow{font-size:20px;color:${C.teal};margin-bottom:2px}
 .spread-apr{font-family:'Outfit',sans-serif;font-size:18px;font-weight:700;color:${C.teal}}
 .spread-label{font-size:10px;color:${C.muted}}
-.arb-btn{padding:8px 18px;border-radius:8px;border:1px solid ${C.teal}44;background:${C.teal}18;color:${C.teal};font-family:'DM Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap}
+.arb-btn{padding:8px 18px;border-radius:8px;border:1px solid ${C.teal}44;background:${C.teal}18;color:${C.teal};font-family:'JetBrains Mono',monospace;font-size:12px;cursor:pointer;transition:all .15s;white-space:nowrap}
 .arb-btn:hover{background:${C.teal}28;border-color:${C.teal}88}
 .arb-btn.active{background:${C.gold}18;border-color:${C.gold}44;color:${C.gold};cursor:default}
 
@@ -224,7 +294,7 @@ td{padding:10px 14px;font-size:12px;white-space:nowrap}
 .pos-pnl.pos{color:${C.teal}} .pos-pnl.neg{color:${C.red}}
 .pos-rate{font-size:12px}
 .pos-rate.ok{color:${C.teal}} .pos-rate.bad{color:${C.red}}
-.close-btn{padding:5px 12px;border-radius:6px;border:1px solid ${C.red}44;background:${C.red}11;color:${C.red};font-family:'DM Mono',monospace;font-size:10px;cursor:pointer;transition:all .15s}
+.close-btn{padding:5px 12px;border-radius:6px;border:1px solid ${C.red}44;background:${C.red}11;color:${C.red};font-family:'JetBrains Mono',monospace;font-size:10px;cursor:pointer;transition:all .15s}
 .close-btn:hover{background:${C.red}22}
 
 /* MODAL */
@@ -255,10 +325,63 @@ td{padding:10px 14px;font-size:12px;white-space:nowrap}
 .pill.gold{background:${C.gold}18;border:1px solid ${C.gold}33;color:${C.gold}}
 .pill.red{background:${C.red}18;border:1px solid ${C.red}33;color:${C.red}}
 
-@media(max-width:960px){
-  .root{grid-template-columns:1fr;grid-template-areas:"nav" "main"}
+/* MOBILE BOTTOM NAV */
+.mob-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:${C.surface};border-top:1px solid ${C.border};z-index:200;padding:0 8px env(safe-area-inset-bottom,0)}
+.mob-nav-inner{display:flex;justify-content:space-around;align-items:center;height:56px}
+.mob-tab{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 16px;border:none;background:transparent;color:${C.muted};font-family:'JetBrains Mono',monospace;font-size:9px;cursor:pointer;border-radius:8px;transition:all .15s;text-transform:uppercase;letter-spacing:.8px}
+.mob-tab.active{color:${C.teal}}
+.mob-tab-icon{font-size:18px;line-height:1}
+
+/* MOBILE CARDS (table → cards on small screen) */
+.rate-card{background:${C.card};border:1px solid ${C.border};border-radius:10px;padding:14px;margin-bottom:8px;animation:fade-up .2s ease}
+.rate-card.anm-danger{border-left:3px solid ${C.red};background:${C.red}08}
+.rate-card.anm-suspect{border-left:3px solid #f59e0b;background:#f59e0b08}
+.rate-card-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.rate-card-sym{display:flex;align-items:center;gap:8px}
+.rate-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.rate-card-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.rate-card-cell{background:${C.surface};border-radius:6px;padding:8px}
+.rate-card-cell-label{font-size:9px;color:${C.muted};text-transform:uppercase;letter-spacing:.8px;margin-bottom:3px}
+.rate-card-cell-val{font-family:'Outfit',sans-serif;font-size:13px;font-weight:600;color:${C.white}}
+
+/* MOBILE CAPITAL STRIP */
+.mob-cap-strip{display:none;background:${C.surface};border-bottom:1px solid ${C.border};padding:10px 16px;align-items:center;justify-content:space-between;gap:12px}
+.mob-cap-input{flex:1;padding:7px 10px 7px 24px;background:${C.card};border:1px solid ${C.b2};border-radius:8px;color:${C.white};font-family:'Outfit',sans-serif;font-size:15px;font-weight:700;outline:none;-moz-appearance:textfield}
+.mob-cap-input::-webkit-inner-spin-button,.mob-cap-input::-webkit-outer-spin-button{-webkit-appearance:none}
+.mob-cap-prefix{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:${C.gold};font-size:14px;pointer-events:none}
+.mob-cap-wrap{position:relative;flex:1}
+.mob-best{font-family:'Outfit',sans-serif;font-size:13px;font-weight:700;color:${C.teal};white-space:nowrap}
+.mob-best-label{font-size:9px;color:${C.muted};text-align:right}
+
+@media(max-width:760px){
+  .root{grid-template-columns:1fr;grid-template-rows:50px auto 1fr}
+  .nav{height:50px;padding:0 14px;gap:10px}
+  .nav-tabs{display:none}
+  .nav-right .live-badge{display:none}
   .sidebar{display:none}
-  .kpi-row{grid-template-columns:repeat(2,1fr)}
+  .main{padding:12px 12px 72px;height:auto}
+  .mob-nav{display:block}
+  .mob-cap-strip{display:flex}
+  .kpi-row{grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:14px}
+  .kpi{padding:10px}
+  .kpi-num{font-size:18px}
+  .kpi-lbl{font-size:9px}
+  .tbl-wrap{display:none}
+  .mob-cards{display:block}
+  .view-tabs{flex-wrap:wrap;gap:4px}
+  .view-tab{padding:5px 10px;font-size:11px}
+  .arb-row{grid-template-columns:1fr auto;grid-template-rows:auto auto;gap:8px;padding:12px}
+  .arb-spread{grid-row:2;grid-column:1/-1;display:flex;align-items:center;gap:12px;text-align:left}
+  .spread-arrow{font-size:16px}
+  .spread-apr{font-size:16px}
+  .pos-row{grid-template-columns:1fr 1fr;gap:6px}
+  .logo-mark{width:22px;height:22px;font-size:11px}
+  .logo{font-size:14px}
+}
+@media(min-width:761px){
+  .mob-cards{display:none}
+  .mob-nav{display:none}
+  .mob-cap-strip{display:none}
 }
 `;
 
@@ -286,6 +409,66 @@ function SymLogo({ symbol }) {
   return (
     <div className="sym-logo" style={{ background: colors[idx] + "22", border: `1px solid ${colors[idx]}44`, color: colors[idx] }}>
       {symbol.slice(0,2)}
+    </div>
+  );
+}
+
+
+function MobileRateCards({ rows, capital, onOpen, positions }) {
+  const capUSD = capital * 1.08;
+  return (
+    <div className="mob-cards">
+      {rows.length === 0 && (
+        <div style={{textAlign:"center",padding:32,color:"#3d4f70",fontSize:12}}>Chargement...</div>
+      )}
+      {rows.map((r, i) => {
+        const anm = getAnomalyScore(r);
+        const anmLbl = anomalyLabel(anm.score);
+        const monthlyGain = capUSD * Math.abs(r.apr) / 100 / 12;
+        const isOpen = positions.some(p => p.symbol === r.symbol && p.exchange === r.exchange);
+        const s = EX_STYLE[r.exchange] || { bg:"#111", border:"#333", color:"#888", short:"??" };
+        const colors = ["#0ea5e9","#f59e0b","#10b981","#8b5cf6","#ef4444","#f97316","#06b6d4","#ec4899"];
+        const col = colors[r.symbol.charCodeAt(0) % colors.length];
+        return (
+          <div key={`${r.exchange}-${r.symbol}-${i}`}
+            className={`rate-card ${anm.score===2?"anm-danger":anm.score===1?"anm-suspect":""}`}>
+            <div className="rate-card-top">
+              <div className="rate-card-sym">
+                <div style={{width:32,height:32,borderRadius:"50%",background:col+"22",border:`1px solid ${col}44`,color:col,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Outfit,sans-serif",fontSize:11,fontWeight:700,flexShrink:0}}>
+                  {r.symbol.slice(0,2)}
+                </div>
+                <div>
+                  <div style={{fontFamily:"Outfit,sans-serif",fontSize:14,fontWeight:700,color:"#e8eeff"}}>{r.symbol}</div>
+                  <span style={{background:s.bg,border:`1px solid ${s.border}`,color:s.color,fontSize:9,padding:"1px 5px",borderRadius:3,fontWeight:600}}>{s.short}</span>
+                </div>
+              </div>
+              <div className="rate-card-right">
+                <span style={{background:anmLbl.color+"22",border:`1px solid ${anmLbl.color}44`,color:anmLbl.color,fontSize:9,padding:"2px 6px",borderRadius:4,fontWeight:600}}>{anmLbl.text}</span>
+                {!isOpen && r.apr >= 5 && (
+                  <button style={{padding:"4px 10px",borderRadius:5,border:`1px solid #00d4aa44`,background:"#00d4aa18",color:"#00d4aa",fontFamily:"DM Mono,monospace",fontSize:10,cursor:"pointer"}}
+                    onClick={() => onOpen(r)}>▶ Ouvrir</button>
+                )}
+                {isOpen && <span style={{fontSize:10,color:"#f0b429"}}>✓ Ouverte</span>}
+              </div>
+            </div>
+            <div className="rate-card-grid">
+              <div className="rate-card-cell">
+                <div className="rate-card-cell-label">APR</div>
+                <div className="rate-card-cell-val" style={{color:r.apr>=50?"#f0b429":r.apr>=15?"#00d4aa":"#8899bb"}}>{fmtAPR(r.apr)}</div>
+              </div>
+              <div className="rate-card-cell">
+                <div className="rate-card-cell-label">Rate/{r.intervalHours}h</div>
+                <div className="rate-card-cell-val" style={{fontSize:11}}>{fmtRate(r.rate)}</div>
+              </div>
+              <div className="rate-card-cell">
+                <div className="rate-card-cell-label">+/mois</div>
+                <div className="rate-card-cell-val" style={{color:"#00d4aa",fontSize:12}}>+{fmtUSD(monthlyGain)}</div>
+              </div>
+            </div>
+            {anm.reason && <div style={{fontSize:10,color:"#f59e0b",marginTop:8,lineHeight:1.4}}>⚠ {anm.reason}</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -418,6 +601,9 @@ function Sidebar({ capital, setCapital, enabledExchanges, toggleExchange, rows }
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [authed, setAuthed] = useState(false);
+  const [pwd, setPwd] = useState("");
+  const [pwdErr, setPwdErr] = useState("");
   const [tab, setTab] = useState("rates");         // rates | arb | positions
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -441,6 +627,7 @@ export default function App() {
       const res = await fetch("/api/rates");
       const data = await res.json();
       const rows = Array.isArray(data.rows) ? data.rows : [];
+      recordRates(rows);
       setRows(rows);
       setLastUpdate(new Date());
     } catch (e) {
@@ -506,6 +693,38 @@ export default function App() {
   const avgAPR = filtered.length ? filtered.slice(0, 10).reduce((s, r) => s + r.apr, 0) / 10 : 0;
   const capUSD = capital * 1.08;
 
+  // Login gate
+  if (!authed) return (
+    <>
+      <style>{css}</style>
+      <div className="login-bg">
+        <div className="login-card">
+          <div className="login-logo">📡 FundingBot</div>
+          <div className="login-sub">Accès sécurisé · by <span style={{color:"#26a8ea"}}>unknown_qan</span></div>
+          <input
+            className="login-input"
+            type="password"
+            placeholder="••••••"
+            value={pwd}
+            onChange={e => { setPwd(e.target.value); setPwdErr(""); }}
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                if (pwd === "admin") setAuthed(true);
+                else setPwdErr("Mot de passe incorrect");
+              }
+            }}
+            autoFocus
+          />
+          <button className="login-btn" onClick={() => {
+            if (pwd === "admin") setAuthed(true);
+            else setPwdErr("Mot de passe incorrect");
+          }}>Connexion</button>
+          <div className="login-err">{pwdErr}</div>
+        </div>
+      </div>
+    </>
+  );
+
   return (
     <>
       <style>{css}</style>
@@ -515,7 +734,14 @@ export default function App() {
         <nav className="nav">
           <div className="logo">
             <div className="logo-mark">📡</div>
-            FundingBot
+            <div className="logo-name">
+              <span className="logo-title">FundingBot</span>
+              <span className="logo-by">
+                by&nbsp;
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="#26a8ea" style={{display:"inline",verticalAlign:"middle",marginRight:2}}><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.01 9.47c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953l11.57-4.461c.537-.194 1.006.131.873.75z"/></svg>
+                <span style={{color:"#26a8ea"}}>unknown_qan</span>
+              </span>
+            </div>
           </div>
           <div className="nav-tabs">
             {[["rates","📊 Rates"],["arb","⚡ Cross-Arb"],["positions","🏦 Positions"]].map(([id,label])=>(
@@ -596,8 +822,10 @@ export default function App() {
                     {filtered.map((r, i) => {
                       const monthlyGain = capUSD * Math.abs(r.apr) / 100 / 12;
                       const isOpen = positions.some(p => p.symbol === r.symbol && p.exchange === r.exchange);
+                      const anm = getAnomalyScore(r);
+                      const anmLbl = anomalyLabel(anm.score);
                       return (
-                        <tr key={`${r.exchange}-${r.symbol}-${i}`}>
+                        <tr key={`${r.exchange}-${r.symbol}-${i}`} className={anm.score===2?"anm-danger":anm.score===1?"anm-suspect":""}>
                           <td>
                             <div className="sym-cell">
                               <SymLogo symbol={r.symbol} />
@@ -615,6 +843,10 @@ export default function App() {
                               <span className={`apr-num ${r.apr>=0?"pos":"neg"}`}>{fmtAPR(r.apr)}</span>
                             </div>
                           </td>
+                          <td>
+                            <span className="anm-badge" style={{background:anmLbl.color+"22",border:`1px solid ${anmLbl.color}44`,color:anmLbl.color}}>{anmLbl.text}</span>
+                            {anm.reason && <div className="anm-reason" title={anm.reason}>{anm.reason}</div>}
+                          </td>
                           <td><span className={`timer ${minsLeft(r.nextFunding)==="now"?"soon":""}`}>{minsLeft(r.nextFunding)}</span></td>
                           <td><span className={`earn-est ${r.apr>=0?"":"neg"}`}>{r.apr>=0?"+":""}{fmtUSD(monthlyGain)}</span></td>
                           <td>
@@ -631,6 +863,7 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+              <MobileRateCards rows={filtered} capital={capital} onOpen={setOpenModal} positions={positions} />
             </div>
           )}
 
@@ -735,6 +968,18 @@ export default function App() {
       {openModal && (
         <OpenModal target={openModal} capital={capital} onConfirm={handleConfirm} onClose={() => setOpenModal(null)} />
       )}
+
+      {/* MOBILE BOTTOM NAV */}
+      <nav className="mob-nav">
+        <div className="mob-nav-inner">
+          {[["rates","📊","Rates"],["arb","⚡","Arb"],["positions","🏦","Positions"]].map(([id,icon,label])=>(
+            <button key={id} className={`mob-tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>
+              <span className="mob-tab-icon">{icon}</span>
+              {label}
+            </button>
+          ))}
+        </div>
+      </nav>
     </>
   );
 }
